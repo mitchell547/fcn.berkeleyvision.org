@@ -10,11 +10,11 @@ import caffe
 from PIL import Image
 
 # Get mask of objects from source image using Caffe network (FCN)
+# Source img is OpenCV-formatted
 def get_mask(source, net):
-	# based on infer.py script
-	in_ = np.array(source, dtype=np.float32)
-   	in_ = in_[:,:,::-1]
-	in_ -= np.array((104.00698793,116.66876762,122.67891434))
+	in_ = source.astype('float32')
+	mean = np.array(cv2.mean(source), dtype=np.float32)
+	in_ -= np.array(mean[0:3])
 	in_ = in_.transpose((2,0,1))
 
 	# shape for input (data blob is N x C x H x W), set data
@@ -24,7 +24,7 @@ def get_mask(source, net):
 	# run net and take argmax for prediction
 	net.forward()
 	out = net.blobs['score'].data[0].argmax(axis=0)
-	return scipy.misc.toimage(out, cmin=0.0).convert("RGB")
+	return out
 
 # Replace background from source img with new background using mask of objects
 # All images must be in PIL-format (RGB)
@@ -45,7 +45,25 @@ def replace_background_pil(source, mask, background):
 	result_img = Image.new("RGB", source.size)
     	result_img.putdata(result_data)
 	return result_img
-		
+	
+# Replace_background function for OpenCV-formatted images
+# Source and Background images in OpenCV-format, Mask in FCN output format
+def replace_background_opencv(source, mask, background):
+	h, w, d = source.shape
+	background = cv2.resize(background, (w, h))
+	
+	mask_fgd = np.where((mask==0),0,1).astype('uint8')
+	mask_bgd = np.where((mask!=0),0,1).astype('uint8')
+	
+	fgd = source * mask_fgd[:,:,np.newaxis]
+	src_bgd = source * mask_bgd[:,:,np.newaxis]
+	bgd = background * mask_bgd[:,:,np.newaxis]
+	
+	alpha = 0.5 # how much background to add
+	result_img = fgd + src_bgd * (1-alpha) + bgd * alpha
+	result_img = result_img.astype('uint8')
+	return result_img
+	
 # Some helpful conversions
 def pil2opencv(pil_img):
 	#pil_img = pil_img.convert("RGB")
@@ -80,7 +98,8 @@ def main(argv):
 	fps = source_vid.get(cv2.cv.CV_CAP_PROP_FPS)
 	print("%s; FPS: %f" % (args.source_video, fps))
 
-	background_img = Image.open(args.background_image)
+	background_img = cv2.imread(args.background_image)
+	#background_img = Image.open(args.background_image)
 	
 	frame_width = int(source_vid.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH))
 	frame_height = int(source_vid.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT))
@@ -94,14 +113,18 @@ def main(argv):
 		ret, frame = source_vid.read()
 		if not ret:
 			break
-		#cv2.imwrite("/video_frames/frame%d.jpg" % count, frame)
+			
+		# For PIL images
+		#frame_img = opencv2pil(frame)
+		#mask = get_mask(frame_img, net)
+		#mask_img = scipy.misc.toimage(out, cmin=0.0).convert("RGB")
+		#result_img = replace_background_pil(frame_img, mask_img, background_img)
+		#result_frame = pil2opencv(result_img)
 		
-		frame_img = opencv2pil(frame)
-		mask_img = get_mask(frame_img, net)
+		# For OpenCV images
+		mask_img = get_mask(frame, net)
+		result_frame = replace_background_opencv(frame, mask_img, background_img)
 		
-		result_img = replace_background_pil(frame_img, mask_img, background_img)
-		
-		result_frame = pil2opencv(result_img)
 		result_vid.write(result_frame)
 		
 		if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -121,5 +144,4 @@ def main(argv):
 	os.environ['GLOG_minloglevel'] = '0'
 
 if __name__ == '__main__':
-    main(sys.argv)
-	
+	main(sys.argv)
